@@ -8,15 +8,6 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
-	"github.com/aws/aws-sdk-go-v2/aws"
-	cfg "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/service/sts"
-	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/launcher"
-	"github.com/go-rod/rod/lib/proto"
-	"github.com/google/uuid"
-	"gopkg.in/ini.v1"
 	"log"
 	"net/url"
 	"os"
@@ -25,13 +16,20 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	cfg "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"github.com/google/uuid"
+	"gopkg.in/ini.v1"
 )
 
 const (
 	AwsSamlEndpoint = "https://signin.aws.amazon.com/saml"
 )
 
-func LoginAll(gui bool) error {
+func LoginAll() error {
 	configs, err := loadConfigs()
 	if err != nil {
 		return fmt.Errorf("we couldn't find any config files. please run 'awsure config --profile [PROFILE_NAME]' to configure")
@@ -51,7 +49,7 @@ func LoginAll(gui bool) error {
 		for profile, config := range configs {
 			h := config.Hash()
 			if _, ok := samls[h]; !ok {
-				samls[h], err = getSaml(config, gui)
+				samls[h], err = getSaml(config)
 				if err != nil {
 					return err
 				}
@@ -91,24 +89,48 @@ func LoginAll(gui bool) error {
 	return nil
 }
 
-func getSaml(config *configuration, gui bool) (string, error) {
+func getSaml(config *configuration) (string, error) {
 	loginUrl, err := createLoginUrl(config.AzureAppIdUri, config.AzureTenantId, AwsSamlEndpoint)
 	if err != nil {
 		return "", err
 	}
-	var saml string
-	if gui {
-		saml, err = loginGui(loginUrl, config)
-	} else {
-		saml, err = loginCli(loginUrl, config)
+
+	// Start local callback server for SAML assertion
+	server := NewCallbackServer()
+	server.SetPort(8765)
+	if err := server.Start(); err != nil {
+		return "", fmt.Errorf("failed to start local callback server: %w", err)
 	}
+	defer func() {
+		_ = server.Shutdown()
+	}()
+
+	// Ensure extension files exist and guide installation if needed
+	browserType, _, err := DetectDefaultBrowser()
+	if err != nil || browserType == BrowserUnknown {
+		fmt.Println("Supported browsers are Chrome and Firefox. Please ensure the extension is loaded in one of them.")
+	}
+	if !IsExtensionPrepared() {
+		fmt.Println("Preparing browser extension...")
+		if err := InstallExtension(browserType); err != nil {
+			return "", fmt.Errorf("failed to prepare/install extension: %w", err)
+		}
+	}
+
+	// Open login URL in the default browser
+	if err := OpenURL(loginUrl); err != nil {
+		fmt.Printf("Failed to open browser automatically. Please open this URL manually: %s\n", loginUrl)
+	}
+
+	// Wait for the browser extension to POST SAML to our callback
+	saml, err := server.WaitForSAML(5 * time.Minute)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("did not receive SAML assertion: %w", err)
 	}
 	return saml, nil
 }
 
-func Login(profile string, configs map[string]*configuration, gui bool) error {
+func Login(profile string, configs map[string]*configuration) error {
 	if configs == nil {
 		var err error
 		configs, err = loadConfigs()
@@ -140,7 +162,7 @@ func Login(profile string, configs map[string]*configuration, gui bool) error {
 
 	if loggedInJumpRole == nil || !loggedInJumpRole.AwsExpiration.After(now) {
 		var saml string
-		saml, err = getSaml(config, gui)
+		saml, err = getSaml(config)
 		if err != nil {
 			return err
 		}
@@ -256,142 +278,6 @@ func getJumpRole(roles []role, config *configuration, err error) (role, error) {
 		}
 	}
 	return rl, nil
-}
-
-func loginCli(urlString string, conf *configuration) (string, error) {
-	browser := rod.New()
-
-	browser = browser.MustConnect()
-	defer browser.MustClose()
-
-	router := browser.HijackRequests()
-	defer router.MustStop()
-
-	samlResponseChan := make(chan string, 1)
-	samlResult := ""
-
-	router.MustAdd("https://*amazon*", func(ctx *rod.Hijack) {
-		reqURL := ctx.Request.URL().String()
-
-		if reqURL == AwsSamlEndpoint {
-			val, err := url.ParseQuery(ctx.Request.Body())
-			if err != nil {
-				fmt.Printf("Fail to saml endpoint response: %v", err)
-				os.Exit(1)
-			}
-
-			samlResponseChan <- val.Get("SAMLResponse")
-
-			ctx.Response.Fail(proto.NetworkErrorReasonInternetDisconnected)
-		} else {
-			ctx.ContinueRequest(&proto.FetchContinueRequest{})
-		}
-	})
-
-	go router.Run()
-
-	stopChan := make(chan struct{})
-	go spinner(stopChan)
-
-	page := browser.MustPage()
-	wait := page.WaitNavigation(proto.PageLifecycleEventNameDOMContentLoaded)
-	page.MustNavigate(urlString)
-	wait()
-
-Loop:
-	for {
-		for _, st := range states {
-			select {
-			case x, ok := <-samlResponseChan:
-				if ok {
-					samlResult = x
-					stopChan <- struct{}{}
-					break Loop
-				}
-			default:
-			}
-
-			el, err := page.Sleeper(rod.NotFoundSleeper).Element(st.selector)
-
-			if err == nil {
-				stopChan <- struct{}{}
-
-				err = st.handler(page, el, conf)
-				if err != nil {
-					return "", err
-				}
-				stopChan = make(chan struct{})
-				go spinner(stopChan)
-				time.Sleep(time.Millisecond * 500)
-			}
-		}
-	}
-
-	return samlResult, nil
-}
-
-func loginGui(urlString string, conf *configuration) (string, error) {
-	l := launcher.New().
-		Headless(false).
-		Devtools(false)
-
-	defer l.Cleanup()
-	controlUrl := l.MustLaunch()
-	browser := rod.New()
-	browser = browser.ControlURL(controlUrl)
-	browser = browser.MustConnect()
-	defer browser.MustClose()
-
-	router := browser.HijackRequests()
-	defer router.MustStop()
-
-	samlResponseChan := make(chan string, 1)
-	samlResult := ""
-
-	router.MustAdd("https://*amazon*", func(ctx *rod.Hijack) {
-		reqURL := ctx.Request.URL().String()
-
-		if reqURL == AwsSamlEndpoint {
-			val, err := url.ParseQuery(ctx.Request.Body())
-			if err != nil {
-				fmt.Printf("Fail to saml endpoint response: %v", err)
-				os.Exit(1)
-			}
-
-			samlResponseChan <- val.Get("SAMLResponse")
-
-			ctx.Response.Fail(proto.NetworkErrorReasonInternetDisconnected)
-		} else {
-			ctx.ContinueRequest(&proto.FetchContinueRequest{})
-		}
-	})
-
-	go router.Run()
-
-	stopChan := make(chan struct{})
-	go spinner(stopChan)
-
-	page := browser.MustPage()
-	wait := page.WaitNavigation(proto.PageLifecycleEventNameDOMContentLoaded)
-	page.MustNavigate(urlString)
-	wait()
-
-Loop:
-	for {
-		select {
-		case x, ok := <-samlResponseChan:
-			if ok {
-				samlResult = x
-				stopChan <- struct{}{}
-				break Loop
-			}
-		default:
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	time.Sleep(1 * time.Second)
-	return samlResult, nil
 }
 
 func createLoginUrl(appIdUri string, tenantId string, assertionConsumerServiceURL string) (string, error) {
