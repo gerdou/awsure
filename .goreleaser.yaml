@@ -24,21 +24,21 @@ archives:
       - goos: windows
         format: zip
 brews:
-  - url_template: "https://github.com/vahid-haghighat/awsure/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
+  - url_template: "https://github.com/gerdou/awsure/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
     download_strategy: CurlDownloadStrategy
     commit_author:
-      name: awsure release bot
-      email: bot@goreleaser.com
-    homepage: "https://github.com/vahid-haghighat/awsure"
+      name: gerdou-app[bot]
+      email: 2530509+gerdou-app[bot]@users.noreply.github.com
+    homepage: "https://github.com/gerdou/awsure"
     description: "Helps setting aws cli credentials with azure login"
     license: "MIT"
     test: system "#{bin}/awsure --version"
     install: bin.install "awsure"
     repository:
-      owner: brewdex
+      owner: gerdou
       name: homebrew-awsure
       branch: main
-      token: "{{ .Env.BREWDEX_GITHUB_TOKEN }}"
+      token: "{{ .Env.GITHUB_TOKEN }}"
 changelog:
   sort: asc
   filters:
