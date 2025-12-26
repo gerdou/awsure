@@ -2,9 +2,9 @@ package cmd
 
 import (
 	"fmt"
-	"github.com/vahid-haghighat/awsure/cmd/internal"
-	"github.com/vahid-haghighat/awsure/cmd/types"
-	"github.com/vahid-haghighat/awsure/version"
+	"github.com/gerdou/awsure/cmd/internal"
+	"github.com/gerdou/awsure/cmd/types"
+	"github.com/gerdou/awsure/version"
 	"os"
 
 	"github.com/spf13/cobra"

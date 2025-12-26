@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"github.com/vahid-haghighat/awsure/cmd/internal"
+	"github.com/gerdou/awsure/cmd/internal"
 
 	"github.com/spf13/cobra"
 )

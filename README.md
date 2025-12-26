@@ -10,7 +10,7 @@ It establishes a federated AWS session and stores the temporary credentials in t
 ### Homebrew
 You can install the app using the following commands:
 ```shell
-brew tap brewdex/awsure
+brew tap gerdou/awsure
 brew install awsure
 ```
 
@@ -20,7 +20,7 @@ Download the executable from the release page for your operating system.
 ### Build
 If you have `go` installed, run:
 ```shell
-go install github.com/vahid-haghighat/awsure@latest
+go install github.com/gerdou/awsure@latest
 ```
 
 ## Acknowledgment
